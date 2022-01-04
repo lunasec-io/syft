@@ -51,7 +51,6 @@ const (
 )
 
 var (
-	writers     *formats.ReportWriters
 	packagesCmd = &cobra.Command{
 		Use:   "packages [SOURCE]",
 		Short: "Generate a package SBOM",
@@ -64,11 +63,6 @@ var (
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PreRunE: func(cmd *cobra.Command, args []string) (err error) {
-			writers, err = formats.MakeWriters(formats.ParseOptions(appConfig.Output, format.TableOption, appConfig.File))
-			if err != nil {
-				return err
-			}
-
 			if appConfig.Dev.ProfileCPU && appConfig.Dev.ProfileMem {
 				return fmt.Errorf("cannot profile CPU and memory simultaneously")
 			}
@@ -211,11 +205,16 @@ func packagesExec(_ *cobra.Command, args []string) error {
 	// could be an image or a directory, with or without a scheme
 	userInput := args[0]
 
-	defer func() {
-		if err := writers.Close(); err != nil {
-			log.Warnf("unable to write to report destination: %+v", err)
-		}
-	}()
+	writers, cleanup, err := formats.MakeWriters(formats.ParseOptions(appConfig.Output, format.TableOption, appConfig.File))
+	if err != nil {
+		return err
+	}
+
+	//defer func() {
+	//	if err := cleanup(); err != nil {
+	//		log.Warnf("unable to cleanup writers: %w", err)
+	//	}
+	//}()
 
 	return eventLoop(
 		packagesExecWorker(userInput),
@@ -283,10 +282,9 @@ func packagesExecWorker(userInput string) <-chan error {
 		}
 
 		bus.Publish(partybus.Event{
-			Type: event.PresenterReady,
-			Value: formats.SBOMWriter{
-				Writers: writers,
-				SBOM:    s,
+			Type: event.Exit,
+			Value: func() error {
+
 			},
 		})
 	}()

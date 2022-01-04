@@ -7,17 +7,18 @@ import (
 	"github.com/wagoodman/go-partybus"
 )
 
-// handleCatalogerPresenterReady is a UI function for processing the CatalogerFinished bus event, displaying the catalog
+// handleExit is a UI function for processing the CatalogerFinished bus event, displaying the catalog
 // via the given presenter to stdout.
-func handleCatalogerPresenterReady(event partybus.Event) error {
+func handleExit(event partybus.Event) error {
 	// show the report to stdout
-	writer, err := syftEventParsers.ParsePresenterReady(event)
+	callback, err := syftEventParsers.ParseExit(event)
 	if err != nil {
-		return fmt.Errorf("bad CatalogerFinished event: %w", err)
+		return fmt.Errorf("bad exit event: %w", err)
 	}
 
-	if err := writer.Write(); err != nil {
-		return fmt.Errorf("unable to show package catalog report: %v", err)
+	if callback == nil {
+		return nil
 	}
-	return nil
+
+	return callback()
 }

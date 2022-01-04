@@ -6,53 +6,50 @@ import (
 	"os"
 	"strings"
 
+	"github.com/hashicorp/go-multierror"
+
 	"github.com/anchore/syft/syft/format"
 	"github.com/anchore/syft/syft/sbom"
 )
 
-type ReportWriter struct {
+// behave like sbom.Writer
+type writer struct {
 	Format *format.Format
-	Writer io.Writer
-	Close  func() error
-}
-
-// ReportWriters contains a number of report writers
-type ReportWriters struct {
-	writers []ReportWriter
+	io.Writer
+	io.Closer
 }
 
 // Write the provided SBOM to all writers
-func (o *ReportWriters) Write(s sbom.SBOM) (errs []error) {
-	for _, w := range o.writers {
-		err := w.Format.Presenter(s).Present(w.Writer)
+func (o *writer) Write(s sbom.SBOM) (errs error) {
+	return o.Format.Encode(o.Writer, s)
+}
+
+type SBOMWriter struct {
+	Writers []sbom.Writer
+	SBOM    sbom.SBOM
+}
+
+// Write writes the SBOM to all writers
+func (s *SBOMWriter) Write() (errs error) {
+	for _, w := range s.Writers {
+		err := w.Write(s.SBOM)
 		if err != nil {
-			errs = append(errs, err)
+			errs = multierror.Append(errs, err)
 		}
 	}
 	return errs
 }
 
 // Close any resources, such as open files
-func (o *ReportWriters) Close() (errs []error) {
-	for _, w := range o.writers {
-		if w.Close != nil {
-			err := w.Close()
-			if err != nil {
-				errs = append(errs, err)
+func (o *SBOMWriter) Close() (errs error) {
+	for _, w := range o.Writers {
+		if c, ok := w.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				errs = multierror.Append(errs, err)
 			}
 		}
 	}
 	return errs
-}
-
-type SBOMWriter struct {
-	Writers *ReportWriters
-	SBOM    sbom.SBOM
-}
-
-// Write writes the SBOM to all writers
-func (s *SBOMWriter) Write() []error {
-	return s.Writers.Write(s.SBOM)
 }
 
 // ParseOptions utility to parse command-line option strings consistently while applying
@@ -90,12 +87,12 @@ type WriterOption struct {
 
 // MakeWriters create all report writers from input options, accepts options of the form:
 // <format> --or-- <format>=<file>
-func MakeWriters(options []WriterOption) (*ReportWriters, error) {
+func MakeWriters(options []WriterOption) ([]sbom.Writer, func() error, error) {
 	if len(options) == 0 {
 		return nil, fmt.Errorf("no output options provided")
 	}
 
-	out := &ReportWriters{}
+	var out []sbom.Writer
 
 	for _, option := range options {
 		// set the presenter
@@ -111,26 +108,37 @@ func MakeWriters(options []WriterOption) (*ReportWriters, error) {
 
 		switch len(option.path) {
 		case 0:
-			out.writers = append(out.writers, ReportWriter{
+			out = append(out, &writer{
 				Format: outputFormat,
 				Writer: os.Stdout,
+				Closer: io.NopCloser(os.Stdout),
 			})
 		default:
 			fileOut, err := fileOutput(option.path)
 			if err != nil {
 				return nil, err
 			}
-			out.writers = append(out.writers, ReportWriter{
+			out = append(out, &writer{
 				Format: outputFormat,
 				Writer: fileOut,
-				Close: func() error {
-					return fileOut.Close()
-				},
+				Closer: fileOut,
 			})
 		}
 	}
 
-	return out, nil
+	c := func() error {
+		var errs error
+		for _, w := range out {
+			if c, ok := w.(io.Closer); ok {
+				if err := c.Close(); err != nil {
+					errs = multierror.Append(errs, err)
+				}
+			}
+		}
+		return errs
+	}
+
+	return out, c, nil
 }
 
 func fileOutput(path string) (*os.File, error) {
